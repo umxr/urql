@@ -179,6 +179,8 @@ export const ssrExchange = (params: SSRExchangeParams = {}): SSRExchange => {
         cachedOps$ = pipe(cachedOps$, tap(invalidate));
       }
 
+      console.log('cachedOps$', cachedOps$);
+
       return merge([forwardedOps$, cachedOps$]);
     };
 
