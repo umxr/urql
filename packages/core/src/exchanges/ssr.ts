@@ -1,6 +1,6 @@
 import { GraphQLError } from 'graphql';
-import { pipe, share, filter, merge, map, tap } from 'wonka';
-import { Exchange, OperationResult, Operation } from '../types';
+import { filter, map, merge, pipe, share, tap } from 'wonka';
+import { Exchange, Operation, OperationResult } from '../types';
 import { CombinedError } from '../utils';
 import { reexecuteOperation } from './cache';
 
@@ -113,65 +113,74 @@ export const ssrExchange = (params: SSRExchangeParams = {}): SSRExchange => {
 
   // The SSR Exchange is a temporary cache that can populate results into data for suspense
   // On the client it can be used to retrieve these temporary results from a rehydrated cache
-  const ssr: SSRExchange = ({ client, forward }) => ops$ => {
-    // params.isClient tells us whether we're on the client-side
-    // By default we assume that we're on the client if suspense-mode is disabled
-    const isClient =
-      params && typeof params.isClient === 'boolean'
-        ? !!params.isClient
-        : !client.suspense;
+  const ssr: SSRExchange =
+    ({ client, forward }) =>
+    ops$ => {
+      // params.isClient tells us whether we're on the client-side
+      // By default we assume that we're on the client if suspense-mode is disabled
+      const isClient =
+        params && typeof params.isClient === 'boolean'
+          ? !!params.isClient
+          : !client.suspense;
 
-    const sharedOps$ = share(ops$);
+      const sharedOps$ = share(ops$);
 
-    let forwardedOps$ = pipe(
-      sharedOps$,
-      filter(
-        operation => !data[operation.key] || !!data[operation.key]!.hasNext
-      ),
-      forward
-    );
+      let forwardedOps$ = pipe(
+        sharedOps$,
+        filter(
+          operation => !data[operation.key] || !!data[operation.key]!.hasNext
+        ),
+        forward
+      );
 
-    // NOTE: Since below we might delete the cached entry after accessing
-    // it once, cachedOps$ needs to be merged after forwardedOps$
-    let cachedOps$ = pipe(
-      sharedOps$,
-      filter(
-        operation =>
-          !!data[operation.key] &&
-          operation.context.requestPolicy !== 'network-only'
-      ),
-      map(op => {
-        const serialized = data[op.key]!;
-        const result = deserializeResult(op, serialized, includeExtensions);
-        if (staleWhileRevalidate && !revalidated.has(op.key)) {
-          result.stale = true;
-          revalidated.add(op.key);
-          reexecuteOperation(client, op);
-        }
-
-        return result;
-      })
-    );
-
-    if (!isClient) {
-      // On the server we cache results in the cache as they're resolved
-      forwardedOps$ = pipe(
-        forwardedOps$,
-        tap((result: OperationResult) => {
-          const { operation } = result;
-          if (operation.kind !== 'mutation') {
-            const serialized = serializeResult(result, includeExtensions);
-            data[operation.key] = serialized;
+      // NOTE: Since below we might delete the cached entry after accessing
+      // it once, cachedOps$ needs to be merged after forwardedOps$
+      let cachedOps$ = pipe(
+        sharedOps$,
+        filter(operation => {
+          console.log(
+            'operation.context.requestPolicy',
+            operation.context.requestPolicy
+          );
+          console.log('data[operation.key]', data[operation.key]);
+          return (
+            !!data[operation.key] &&
+            operation.context.requestPolicy !== 'network-only'
+          );
+        }),
+        map(op => {
+          const serialized = data[op.key]!;
+          const result = deserializeResult(op, serialized, includeExtensions);
+          console.log(staleWhileRevalidate && !revalidated.has(op.key));
+          if (staleWhileRevalidate && !revalidated.has(op.key)) {
+            result.stale = true;
+            revalidated.add(op.key);
+            reexecuteOperation(client, op);
           }
+
+          return result;
         })
       );
-    } else {
-      // On the client we delete results from the cache as they're resolved
-      cachedOps$ = pipe(cachedOps$, tap(invalidate));
-    }
 
-    return merge([forwardedOps$, cachedOps$]);
-  };
+      if (!isClient) {
+        // On the server we cache results in the cache as they're resolved
+        forwardedOps$ = pipe(
+          forwardedOps$,
+          tap((result: OperationResult) => {
+            const { operation } = result;
+            if (operation.kind !== 'mutation') {
+              const serialized = serializeResult(result, includeExtensions);
+              data[operation.key] = serialized;
+            }
+          })
+        );
+      } else {
+        // On the client we delete results from the cache as they're resolved
+        cachedOps$ = pipe(cachedOps$, tap(invalidate));
+      }
+
+      return merge([forwardedOps$, cachedOps$]);
+    };
 
   ssr.restoreData = (restore: SSRData) => {
     for (const key in restore) {
